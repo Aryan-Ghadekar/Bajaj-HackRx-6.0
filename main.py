@@ -250,6 +250,13 @@ def trim_context(txt: str, max_words: int = 100) -> str:
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ───────────────────────────── API ROUTE ────────────────────────────────────
+
+@app.get("/health")
+async def health_check():
+    # Optional: You can add DB checks, etc. here
+    return JSONResponse(content={"status": "ok", "message": "Service is healthy"})
+
+
 @app.post("/api/v1/hackrx/run", response_model=QueryResponse)
 async def run_query(document: UploadFile = File(...),
     questions: List[str] = Form(...), 
@@ -311,3 +318,4 @@ async def run_query(document: UploadFile = File(...),
     session.commit()
 
     return QueryResponse(answers=list(answers))
+
