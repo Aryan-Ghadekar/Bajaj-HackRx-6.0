@@ -1,67 +1,77 @@
+# azure-pipelines.yml
+trigger:
+- main
+
+variables:
+  vmImageName: 'ubuntu-latest'
+  pythonVersion: '3.11'
+  projectRoot: '$(System.DefaultWorkingDirectory)'
+  environmentName: 'production'
 
 stages:
-  - stage: Build
-    displayName: Build Stage
-    jobs:
-    - job: BuildJob
-      pool:
-        vmImage: $(vmImageName)
-      steps:
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: '$(pythonVersion)'
-        displayName: 'Use Python $(pythonVersion)'
-        
-      - script: |
-          python -m venv antenv
-          source antenv/bin/activate
-          python -m pip install --upgrade pip
-          pip install setup
-          pip install --target="./.python_packages/lib/site-packages" -r ./requirements.txt
-          echo "Installing Requirements"
-          sh requirements.sh
-          pip install fastapi uvicorn
-          echo "The uvicorn version installed is:"
-          uvicorn --version
-        workingDirectory: $(projectRoot)
-        displayName: "Install requirements"
+- stage: Build
+  displayName: Build Stage
+  jobs:
+  - job: BuildJob
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
 
-      - task: ArchiveFiles@2
-        displayName: 'Archive files'
-        inputs:
-          rootFolderOrFile: '$(projectRoot)'
-          includeRootFolder: false
-          archiveType: zip
-          archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
-          replaceExistingArchive: true
+    - script: |
+        python -m venv antenv
+        source antenv/bin/activate
+        python -m pip install --upgrade pip
+        # Ensure project deps, including gunicorn/uvicorn
+        pip install --target="./.python_packages/lib/site-packages" -r ./requirements.txt
+        pip install fastapi uvicorn gunicorn --target="./.python_packages/lib/site-packages"
+        echo "The uvicorn version installed is:"
+        python -c "import uvicorn; print(uvicorn.__version__)"
+        # Optional: list vendored packages to verify presence
+        ls -la .python_packages/lib/site-packages | head -n 50
+      workingDirectory: $(projectRoot)
+      displayName: "Install requirements (vendored)"
 
-      - upload: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
-        displayName: 'Upload package'
-        artifact: drop
+    - task: ArchiveFiles@2
+      displayName: 'Archive files'
+      inputs:
+        rootFolderOrFile: '$(projectRoot)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        replaceExistingArchive: true
 
-  - stage: Deploy
-    displayName: 'Deploy Web App'
-    dependsOn: Build
-    condition: succeeded()
-    jobs:
-    - deployment: DeploymentJob
-      pool:
-        vmImage: $(vmImageName)
-      environment: $(environmentName)
-      strategy:
-        runOnce:
-          deploy:
-            steps:
-              - task: UsePythonVersion@0
-                inputs:
-                  versionSpec: '$(pythonVersion)'
-                displayName: 'Use Python $(pythonVersion)'
+    - upload: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+      displayName: 'Upload package'
+      artifact: drop
 
-              - task: AzureWebApp@1
-                displayName: 'Deploy Azure Web App : $(webAppName)'
-                inputs:
-                  azureSubscription: $(azureServiceConnectionId)
-                  appName: $(webAppName)
-                  package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
-                  startUpCommand: 'gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:api'
-                  appType: 'webAppLinux'
+- stage: Deploy
+  displayName: Deploy Web App
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeploymentJob
+    pool:
+      vmImage: $(vmImageName)
+    environment: $(environmentName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python $(pythonVersion)'
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App : $(webAppName)'
+            inputs:
+              azureSubscription: $(azureServiceConnectionId)
+              appName: $(webAppName)
+              package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
+              
+              startUpCommand: 'gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 main:app'
+              appType: 'webAppLinux'
