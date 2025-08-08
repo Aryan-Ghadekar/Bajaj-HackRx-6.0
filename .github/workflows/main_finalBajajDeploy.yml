@@ -1,1 +1,67 @@
 
+stages:
+  - stage: Build
+    displayName: Build Stage
+    jobs:
+    - job: BuildJob
+      pool:
+        vmImage: $(vmImageName)
+      steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '$(pythonVersion)'
+        displayName: 'Use Python $(pythonVersion)'
+        
+      - script: |
+          python -m venv antenv
+          source antenv/bin/activate
+          python -m pip install --upgrade pip
+          pip install setup
+          pip install --target="./.python_packages/lib/site-packages" -r ./requirements.txt
+          echo "Installing Requirements"
+          sh requirements.sh
+          pip install fastapi uvicorn
+          echo "The uvicorn version installed is:"
+          uvicorn --version
+        workingDirectory: $(projectRoot)
+        displayName: "Install requirements"
+
+      - task: ArchiveFiles@2
+        displayName: 'Archive files'
+        inputs:
+          rootFolderOrFile: '$(projectRoot)'
+          includeRootFolder: false
+          archiveType: zip
+          archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+          replaceExistingArchive: true
+
+      - upload: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        displayName: 'Upload package'
+        artifact: drop
+
+  - stage: Deploy
+    displayName: 'Deploy Web App'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+    - deployment: DeploymentJob
+      pool:
+        vmImage: $(vmImageName)
+      environment: $(environmentName)
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - task: UsePythonVersion@0
+                inputs:
+                  versionSpec: '$(pythonVersion)'
+                displayName: 'Use Python $(pythonVersion)'
+
+              - task: AzureWebApp@1
+                displayName: 'Deploy Azure Web App : $(webAppName)'
+                inputs:
+                  azureSubscription: $(azureServiceConnectionId)
+                  appName: $(webAppName)
+                  package: $(Pipeline.Workspace)/drop/$(Build.BuildId).zip
+                  startUpCommand: 'gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:api'
+                  appType: 'webAppLinux'
